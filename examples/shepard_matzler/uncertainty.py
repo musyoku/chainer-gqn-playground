@@ -1,14 +1,16 @@
 import argparse
 import colorsys
 import math
+import os
 import random
 import sys
 import time
 
+import cupy as cp
 import cv2
+import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
-import cupy as cp
 from chainer.backends import cuda
 
 sys.path.append(".")
@@ -67,7 +69,7 @@ def get_available_axis_and_direction(space, pos):
     return ret
 
 
-def generate_block_positions(num_cubes):
+def generate_random_block_positions(num_cubes):
     assert num_cubes > 0
 
     current_relative_pos = (0, 0, 0)
@@ -106,6 +108,28 @@ def generate_block_positions(num_cubes):
 
         position_array.append(position)
 
+        center_of_gravity[0] += position[0]
+        center_of_gravity[1] += position[1]
+        center_of_gravity[2] += position[2]
+
+    center_of_gravity[0] /= num_cubes
+    center_of_gravity[1] /= num_cubes
+    center_of_gravity[2] /= num_cubes
+
+    return position_array, center_of_gravity
+
+
+def generate_block_positions(num_cubes):
+    position_array = [
+        (0, 0, 0),
+        (1, 0, 0),
+        (-1, 0, 2),
+        (0, 0, 1),
+        (0, 0, 2),
+    ]
+    center_of_gravity = [0, 0, 0]
+
+    for position in position_array:
         center_of_gravity[0] += position[0]
         center_of_gravity[1] += position[1]
         center_of_gravity[2] += position[2]
@@ -162,6 +186,24 @@ def build_scene(color_array):
 
 
 def main():
+    try:
+        os.mkdir(args.figure_directory)
+    except:
+        pass
+
+    #### Model ####
+    xp = np
+    using_gpu = args.gpu_device >= 0
+    if using_gpu:
+        cuda.get_device(args.gpu_device).use()
+        xp = cp
+
+    hyperparams = HyperParameters(snapshot_directory=args.snapshot_path)
+    model = Model(hyperparams, snapshot_directory=args.snapshot_path)
+    if using_gpu:
+        model.to_gpu()
+    print(hyperparams)
+
     #### Renderer ####
     # Set GPU device
     rtx.set_device(args.gpu_device)
@@ -193,73 +235,95 @@ def main():
         (screen_height, screen_width, 3), dtype=np.float32)
 
     camera = rtx.OrthographicCamera()
-    scene = build_scene(color_array)
-
-    #### Model ####
-    xp = np
-    using_gpu = args.gpu_device >= 0
-    if using_gpu:
-        cuda.get_device(args.gpu_device).use()
-        xp = cp
-
-    hyperparams = HyperParameters(snapshot_directory=args.snapshot_path)
-    model = Model(hyperparams, snapshot_directory=args.snapshot_path)
-    if using_gpu:
-        model.to_gpu()
-    print(hyperparams)
 
     #### Figure ####
+    plt.style.use("dark_background")
     fig = plt.figure(figsize=(8, 4))
     fig.suptitle("GQN")
+
     axis_observation = fig.add_subplot(1, 2, 1)
-    axis_generation = fig.add_subplot(1, 2, 2)
-
-    eye_scale = 3
-    total_frames_per_rotation = 24
-
-    eye = np.random.normal(size=3)
-    eye = [p * eye_scale for p in (0, 1, 0)]
-    center = (0, 0, 0)
-    camera.look_at(eye, center, up=(0, 1, 0))
-
-    renderer.render(scene, camera, rt_args, cuda_args, render_buffer)
-
-    #### Prediction ####
-    # Convert to sRGB
-    image = np.power(np.clip(render_buffer, 0, 1), 1.0 / 2.2)
-    image = np.uint8(image * 255)
-    image = cv2.bilateralFilter(image, 3, 25, 25)
-
-    axis_observation.imshow(image, interpolation="none")
+    axis_observation.axis("off")
     axis_observation.set_title("Observation")
 
-    yaw = gqn.math.yaw(eye, center)
-    pitch = gqn.math.pitch(eye, center)
-    ovserved_viewpoint = np.array(
-        eye + (math.cos(yaw), math.sin(yaw), math.cos(pitch), math.sin(pitch)),
-        dtype=np.float32)
-    ovserved_viewpoint = ovserved_viewpoint[None, None, ...]
+    axis_generation = fig.add_subplot(1, 2, 2)
+    axis_generation.axis("off")
+    axis_generation.set_title("Generation")
 
-    observed_image = image.astype(np.float32)
-    observed_image = preprocess_images(observed_image, add_noise=False)
-    observed_image = observed_image[None, None, ...]
-    observed_image = observed_image.transpose((0, 1, 4, 2, 3))
+    for scene_index in range(100):
+        scene = build_scene(color_array)
 
-    if using_gpu:
-        ovserved_viewpoint = to_gpu(ovserved_viewpoint)
-        observed_image = to_gpu(observed_image)
+        eye_scale = 3
+        total_frames_per_rotation = 24
+        artist_frame_array = []
 
-    representation = model.compute_observation_representation(
-        observed_image, ovserved_viewpoint)
+        observation_viewpoint_angle_rad = 0
+        for k in range(5):
+            eye = tuple(p * eye_scale for p in [
+                math.cos(observation_viewpoint_angle_rad),
+                math.sin(observation_viewpoint_angle_rad), 0
+            ])
+            center = (0, 0, 0)
+            camera.look_at(eye, center, up=(0, 1, 0))
 
-    angle_rad = 0
-    for t in range(total_frames_per_rotation):
-        query_viewpoint = rotate_query_viewpoint(angle_rad, 1, xp)
-        generated_image = model.generate_image(query_viewpoint, representation)
-        generated_image = make_uint8(generated_image[0])
-        axis_generation.imshow(generated_image)
-        plt.pause(0.1)
-        angle_rad += 2 * math.pi / total_frames_per_rotation
+            renderer.render(scene, camera, rt_args, cuda_args, render_buffer)
+
+            # Convert to sRGB
+            frame = np.power(np.clip(render_buffer, 0, 1), 1.0 / 2.2)
+            frame = np.uint8(frame * 255)
+            frame = cv2.bilateralFilter(frame, 3, 25, 25)
+
+            observation_viewpoint_angle_rad += math.pi / 20
+
+            yaw = gqn.math.yaw(eye, center)
+            pitch = gqn.math.pitch(eye, center)
+            ovserved_viewpoint = np.array(
+                eye + (math.cos(yaw), math.sin(yaw), math.cos(pitch),
+                       math.sin(pitch)),
+                dtype=np.float32)
+            ovserved_viewpoint = ovserved_viewpoint[None, None, ...]
+
+            observed_image = frame.astype(np.float32)
+            observed_image = preprocess_images(observed_image, add_noise=False)
+            observed_image = observed_image[None, None, ...]
+            observed_image = observed_image.transpose((0, 1, 4, 2, 3))
+
+            if using_gpu:
+                ovserved_viewpoint = to_gpu(ovserved_viewpoint)
+                observed_image = to_gpu(observed_image)
+
+            representation = model.compute_observation_representation(
+                observed_image, ovserved_viewpoint)
+
+            query_viewpoint_angle_rad = 0
+            for t in range(total_frames_per_rotation):
+                artist_array = []
+
+                query_viewpoint = rotate_query_viewpoint(
+                    query_viewpoint_angle_rad, 1, xp)
+                query_viewpoint = rotate_query_viewpoint(math.pi / 6, 1, xp)
+                generated_image = model.generate_image(query_viewpoint,
+                                                       representation)
+                generated_image = make_uint8(generated_image[0])
+
+                artist_array.append(
+                    axis_observation.imshow(
+                        frame, interpolation="none", animated=True))
+                artist_array.append(
+                    axis_generation.imshow(generated_image, animated=True))
+
+                query_viewpoint_angle_rad += 2 * math.pi / total_frames_per_rotation
+                artist_frame_array.append(artist_array)
+                anim = animation.ArtistAnimation(
+                    fig,
+                    artist_frame_array,
+                    interval=1 / 24,
+                    blit=True,
+                    repeat_delay=0)
+                anim.save(
+                    "{}/shepard_matzler_uncertainty_{}.mp4".format(
+                        args.figure_directory, scene_index),
+                    writer="ffmpeg",
+                    fps=12)
 
 
 if __name__ == "__main__":
