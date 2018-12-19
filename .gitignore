@@ -1,0 +1,21 @@
+# ignore all
+*
+
+# allow any
+!*/
+!*.py
+!*.h
+!*.c
+!*.cu
+!*.hpp
+!*.cpp
+!*.md
+!*.inl
+!.gitignore
+!makefile
+!textures/floor_texture_1.png
+
+# ignore
+.vscode
+build
+/examples/geometries/dragon
