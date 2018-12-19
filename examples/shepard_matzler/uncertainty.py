@@ -249,11 +249,11 @@ def main():
     axis_generation.axis("off")
     axis_generation.set_title("Generation")
 
-    for scene_index in range(100):
+    for scene_index in range(1, 100):
         scene = build_scene(color_array)
 
         eye_scale = 3
-        total_frames_per_rotation = 24
+        total_frames_per_rotation = 48
         artist_frame_array = []
 
         observation_viewpoint_angle_rad = 0
@@ -300,7 +300,7 @@ def main():
 
                 query_viewpoint = rotate_query_viewpoint(
                     query_viewpoint_angle_rad, 1, xp)
-                query_viewpoint = rotate_query_viewpoint(math.pi / 6, 1, xp)
+                # query_viewpoint = rotate_query_viewpoint(math.pi / 6, 1, xp)
                 generated_image = model.generate_image(query_viewpoint,
                                                        representation)
                 generated_image = make_uint8(generated_image[0])
